@@ -9,6 +9,8 @@
     "astro": "astro"
   },
   "dependencies": {
-    "astro": "^5.15.3"
+    "@astrojs/netlify": "^6.6.0",
+    "astro": "^5.15.3",
+    "lightweight-charts": "^5.0.9"
   }
 }

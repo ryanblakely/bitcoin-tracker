@@ -1,0 +1,113 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Bitcoin Tracker - Real-time Bitcoin Price Chart',
+  description = 'Track Bitcoin price in real-time with a clean, fast, and lightweight interface.',
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <style is:global>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      body {
+        color: #1a1a1a;
+        background: #fff;
+        max-width: 100vw;
+        overflow-x: hidden;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+      }
+
+      a {
+        color: #0066cc;
+      }
+
+      a:visited {
+        color: #551a8b;
+      }
+
+
+      /* Dark mode styles */
+      html.dark-mode {
+        background: #0a0a0a;
+      }
+
+      html.dark-mode body {
+        background: #0a0a0a;
+        color: #fff;
+      }
+
+      html.dark-mode a {
+        color: #6b9aff;
+      }
+
+      html.dark-mode a:visited {
+        color: #bb86fc;
+      }
+
+      /* Dark mode for navigation */
+      html.dark-mode .nav {
+        border-bottom-color: #444;
+      }
+
+      html.dark-mode .site-title a {
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <slot />
+    <footer>
+      <p>Bitcoin Tracker - Real-time Bitcoin price monitoring</p>
+    </footer>
+    <script src="/settings.js" is:inline defer></script>
+  </body>
+</html>
+
+<style>
+  footer {
+    max-width: 1000px;
+    margin: 4rem auto 2rem auto;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e5e5e5;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: #666;
+  }
+
+  footer a {
+    color: #666;
+  }
+
+  html.dark-mode footer {
+    border-top-color: #333;
+    color: #888;
+  }
+
+  html.dark-mode footer a {
+    color: #888;
+  }
+</style>

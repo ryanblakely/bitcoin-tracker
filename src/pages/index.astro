@@ -1,16 +1,886 @@
 ---
-
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Navigation from '../components/Navigation.astro';
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+<BaseLayout title="Bitcoin Tracker - Real-time Bitcoin Price">
+  <Navigation />
+  <main class="page-main">
+    <div class="bitcoin-container">
+      <div class="bitcoin-header">
+        <div class="price-info">
+          <div class="current-price" id="currentPrice">Loading...</div>
+          <div class="price-change" id="priceChange"></div>
+        </div>
+      </div>
+
+      <div class="timeframe-selector">
+        <button class="timeframe-btn" data-timeframe="10m">10m</button>
+        <button class="timeframe-btn" data-timeframe="1h">1h</button>
+        <button class="timeframe-btn" data-timeframe="3h">3h</button>
+        <button class="timeframe-btn active" data-timeframe="12h">12h</button>
+        <button class="timeframe-btn" data-timeframe="24h">24h</button>
+        <button class="timeframe-btn" data-timeframe="3d">3d</button>
+        <button class="timeframe-btn" data-timeframe="7d">7d</button>
+        <button class="timeframe-btn" data-timeframe="30d">30d</button>
+        <button class="timeframe-btn" data-timeframe="3mo">3mo</button>
+        <button class="timeframe-btn" data-timeframe="6mo">6mo</button>
+        <button class="timeframe-btn" data-timeframe="all">all</button>
+      </div>
+
+      <div id="chart"></div>
+    </div>
+  </main>
+</BaseLayout>
+
+<script>
+  import {AreaSeries, ColorType, createChart, type UTCTimestamp} from 'lightweight-charts';
+
+  const chartContainer = document.getElementById('chart');
+  const currentPriceEl = document.getElementById('currentPrice');
+  const priceChangeEl = document.getElementById('priceChange');
+
+  if (!chartContainer) {
+    throw new Error('Chart container not found');
+  }
+
+  // Detect dark mode
+  let isDarkMode = document.documentElement.classList.contains('dark-mode');
+
+  // Custom time formatter for 12h period
+  function formatTimeForPeriod(time: number, tickMarkType: number, selectedDays: number): string {
+    const date = new Date(time * 1000);
+
+    // 3d timeframe: Show date + time (e.g., "Nov 1, 2:00 PM")
+    if (selectedDays === 3) {
+      return date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ', ' +
+             date.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    }
+
+    // 7d timeframe: Show day name + time (e.g., "Mon 2:00 PM")
+    if (selectedDays === 7) {
+      return date.toLocaleDateString('en-US', {weekday: 'short'}) + ' ' +
+             date.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    }
+
+    // 30d, 3mo, 6mo timeframes: Show month + day (e.g., "Nov 1")
+    if (selectedDays === 30 || selectedDays === 90 || selectedDays === 180) {
+      return date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+    }
+
+    // For 12h period, show hourly ticks
+    if (selectedDays === 0.5) {
+      return date.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'});
+    }
+
+    // For other periods (10m, 1h, 3h, 24h, all), use default formatting
+    if (tickMarkType === 0) {
+      // Year
+      return date.getFullYear().toString();
+    } else if (tickMarkType === 1) {
+      // Month
+      return date.toLocaleDateString('en-US', {month: 'short'});
+    } else if (tickMarkType === 2) {
+      // Day
+      return date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+    } else if (tickMarkType === 3 || tickMarkType === 4) {
+      // Time
+      return date.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'});
+    }
+
+    return '';
+  }
+
+  // State management
+  let updateInterval: number | null = null;
+  let initialPriceForPeriod = 0;
+  let latestPrice = 0;
+  let lastUpdateTime = 0;
+  let lastChartUpdateTime = 0; // Track when we last added a chart data point
+  let currentSelectedDays = 0.5; // Default to 12 hours
+
+  // Keep track of all data points
+  let allDataPoints: Array<{time: UTCTimestamp; value: number}> = [];
+
+  // Cache for historical data to avoid rate limiting
+  const dataCache = new Map<string, {data: any; timestamp: number}>();
+  const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+  // Timeframe configuration
+  const TIMEFRAME_CONFIG: Record<
+    string,
+    {duration: number; step: number; limit: number; updateInterval: number; label: string}
+  > = {
+    '10m': {duration: 600, step: 60, limit: 5, updateInterval: 2, label: '10m'},
+    '1h': {duration: 3600, step: 60, limit: 10, updateInterval: 3, label: '1h'},
+    '3h': {duration: 10800, step: 180, limit: 60, updateInterval: 7, label: '3h'},
+    '12h': {duration: 43200, step: 300, limit: 144, updateInterval: 300, label: '12h'},
+    '24h': {duration: 86400, step: 300, limit: 288, updateInterval: 300, label: '24h'},
+    '3d': {duration: 259200, step: 300, limit: 864, updateInterval: 300, label: '3d'},
+    '7d': {duration: 604800, step: 3600, limit: 168, updateInterval: 600, label: '7d'},
+    '30d': {duration: 2592000, step: 14400, limit: 180, updateInterval: 3600, label: '30d'},
+    '3mo': {duration: 7776000, step: 43200, limit: 180, updateInterval: 43200, label: '3mo'},
+    '6mo': {duration: 15552000, step: 86400, limit: 180, updateInterval: 86400, label: '6mo'},
+    all: {duration: 31536000, step: 86400, limit: 1000, updateInterval: 86400, label: 'all'},
+  };
+
+  let selectedTimeframe = '12h'; // Default to 12 hours
+
+  // Chart configuration
+  const chart = createChart(chartContainer, {
+    layout: {
+      background: {type: ColorType.Solid, color: isDarkMode ? '#1a1a1a' : '#ffffff'},
+      textColor: isDarkMode ? '#ffffff' : '#000000',
+    },
+    grid: {
+      vertLines: {color: isDarkMode ? '#333333' : '#e5e7eb'},
+      horzLines: {color: isDarkMode ? '#333333' : '#e5e7eb'},
+    },
+    width: chartContainer.clientWidth,
+    height: 400,
+    crosshair: {
+      mode: 1, // Normal crosshair mode
+      vertLine: {
+        width: 1,
+        color: isDarkMode ? '#666666' : '#999999',
+        style: 2, // Dashed line
+        labelBackgroundColor: isDarkMode ? '#333333' : '#e5e7eb',
+      },
+      horzLine: {
+        width: 1,
+        color: isDarkMode ? '#666666' : '#999999',
+        style: 2, // Dashed line
+        labelBackgroundColor: isDarkMode ? '#333333' : '#e5e7eb',
+      },
+    },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time: number, tickMarkType: number) => {
+        return formatTimeForPeriod(time, tickMarkType, currentSelectedDays);
+      },
+      rightOffset: 5,
+      barSpacing: 6,
+      minBarSpacing: 0.5,
+    },
+    localization: {
+      timeFormatter: (time: number) => {
+        // Convert Unix timestamp to local time for tooltip
+        const date = new Date(time * 1000);
+        return date.toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+        });
+      },
+    },
+  });
+
+  const areaSeries = chart.addSeries(AreaSeries, {
+    lineColor: isDarkMode ? '#ffffff' : '#000000',
+    topColor: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
+    bottomColor: isDarkMode ? 'rgba(255, 255, 255, 0)' : 'rgba(0, 0, 0, 0)',
+    lineWidth: 2,
+  });
+
+  // Function to update chart colors based on dark mode
+  function updateChartColors(darkMode: boolean) {
+    chart.applyOptions({
+      layout: {
+        background: {type: ColorType.Solid, color: darkMode ? '#1a1a1a' : '#ffffff'},
+        textColor: darkMode ? '#ffffff' : '#000000',
+      },
+      grid: {
+        vertLines: {color: darkMode ? '#333333' : '#e5e7eb'},
+        horzLines: {color: darkMode ? '#333333' : '#e5e7eb'},
+      },
+      crosshair: {
+        vertLine: {
+          color: darkMode ? '#666666' : '#999999',
+          labelBackgroundColor: darkMode ? '#333333' : '#e5e7eb',
+        },
+        horzLine: {
+          color: darkMode ? '#666666' : '#999999',
+          labelBackgroundColor: darkMode ? '#333333' : '#e5e7eb',
+        },
+      },
+    });
+
+    areaSeries.applyOptions({
+      lineColor: darkMode ? '#ffffff' : '#000000',
+      topColor: darkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
+      bottomColor: darkMode ? 'rgba(255, 255, 255, 0)' : 'rgba(0, 0, 0, 0)',
+    });
+  }
+
+  // Watch for dark mode changes
+  const observer = new MutationObserver(mutations => {
+    mutations.forEach(mutation => {
+      if (mutation.attributeName === 'class') {
+        const newIsDarkMode = document.documentElement.classList.contains('dark-mode');
+        if (newIsDarkMode !== isDarkMode) {
+          isDarkMode = newIsDarkMode;
+          updateChartColors(isDarkMode);
+        }
+      }
+    });
+  });
+
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+
+  // Resize chart on window resize
+  window.addEventListener('resize', () => {
+    if (chartContainer) {
+      chart.applyOptions({width: chartContainer.clientWidth});
+    }
+  });
+
+  // Fetch and bucket trades from Bitstamp transactions API for sub-minute granularity
+  async function fetchAndBucketTrades(timeframe: string, bucketSizeSeconds: number) {
+    try {
+      console.log(`Fetching trades for ${timeframe} with ${bucketSizeSeconds}s buckets`);
+
+      // Fetch recent trades (last hour, up to 1000 trades)
+      const response = await fetch('https://www.bitstamp.net/api/v2/transactions/btcusd/?limit=1000');
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const trades = await response.json();
+      console.log(`Received ${trades.length} trades from transactions API`);
+
+      // Filter trades to the desired timeframe
+      const config = TIMEFRAME_CONFIG[timeframe];
+      const now = Math.floor(Date.now() / 1000);
+      const cutoffTime = now - config.duration;
+      const recentTrades = trades.filter((t: any) => parseInt(t.date) >= cutoffTime);
+
+      console.log(`Filtered to ${recentTrades.length} trades within ${timeframe}`);
+
+      // Create time buckets
+      const buckets = new Map<number, any[]>();
+      recentTrades.forEach((trade: any) => {
+        const timestamp = parseInt(trade.date);
+        const bucketTime = Math.floor(timestamp / bucketSizeSeconds) * bucketSizeSeconds;
+
+        if (!buckets.has(bucketTime)) {
+          buckets.set(bucketTime, []);
+        }
+        buckets.get(bucketTime)!.push({
+          price: parseFloat(trade.price),
+          amount: parseFloat(trade.amount),
+          timestamp: timestamp,
+        });
+      });
+
+      // Convert buckets to chart data points (use last trade price in each bucket)
+      const dataPoints = Array.from(buckets.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([bucketTime, tradesInBucket]) => {
+          const lastTrade = tradesInBucket[tradesInBucket.length - 1];
+          return {
+            time: bucketTime as UTCTimestamp,
+            value: lastTrade.price,
+          };
+        });
+
+      console.log(`Created ${dataPoints.length} bucketed data points`);
+      return dataPoints;
+    } catch (error) {
+      console.error('Error fetching and bucketing trades:', error);
+      return [];
+    }
+  }
+
+  // Fetch mixed granularity data for 3h chart: OHLC for older 2h + bucketed trades for recent 1h
+  async function fetchMixedGranularityData() {
+    try {
+      console.log('Fetching mixed granularity data for 3h chart');
+
+      // 1. Fetch OHLC data for older 2 hours (3-minute candles)
+      const ohlcResponse = await fetch('https://www.bitstamp.net/api/v2/ohlc/btcusd/?step=180&limit=40');
+      if (!ohlcResponse.ok) {
+        throw new Error(`OHLC HTTP error! status: ${ohlcResponse.status}`);
+      }
+      const ohlcData = await ohlcResponse.json();
+      const ohlcCandles = ohlcData.data.ohlc.map((candle: any) => ({
+        time: parseInt(candle.timestamp) as UTCTimestamp,
+        value: parseFloat(candle.close),
+      }));
+      console.log(`Fetched ${ohlcCandles.length} OHLC candles for older 2 hours`);
+
+      // 2. Fetch trades for recent 1 hour and bucket to 7 seconds
+      const tradesResponse = await fetch('https://www.bitstamp.net/api/v2/transactions/btcusd/?limit=1000');
+      if (!tradesResponse.ok) {
+        throw new Error(`Transactions HTTP error! status: ${tradesResponse.status}`);
+      }
+      const trades = await tradesResponse.json();
+      console.log(`Fetched ${trades.length} trades for recent 1 hour`);
+
+      // Filter trades to last 1 hour only
+      const now = Math.floor(Date.now() / 1000);
+      const oneHourAgo = now - 3600;
+      const recentTrades = trades.filter((t: any) => parseInt(t.date) >= oneHourAgo);
+
+      // Bucket trades into 7-second intervals
+      const buckets = new Map<number, any[]>();
+      recentTrades.forEach((trade: any) => {
+        const timestamp = parseInt(trade.date);
+        const bucketTime = Math.floor(timestamp / 7) * 7;
+
+        if (!buckets.has(bucketTime)) {
+          buckets.set(bucketTime, []);
+        }
+        buckets.get(bucketTime)!.push({
+          price: parseFloat(trade.price),
+          amount: parseFloat(trade.amount),
+          timestamp: timestamp,
+        });
+      });
+
+      const bucketedTrades = Array.from(buckets.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([bucketTime, tradesInBucket]) => {
+          const lastTrade = tradesInBucket[tradesInBucket.length - 1];
+          return {
+            time: bucketTime as UTCTimestamp,
+            value: lastTrade.price,
+          };
+        });
+      console.log(`Created ${bucketedTrades.length} bucketed trade points for recent 1 hour`);
+
+      // 3. Combine both datasets, filtering OHLC data to only include older than 1 hour
+      const combinedData = [
+        ...ohlcCandles.filter((candle) => candle.time < oneHourAgo),
+        ...bucketedTrades,
+      ].sort((a, b) => a.time - b.time);
+
+      console.log(`Combined dataset: ${combinedData.length} total points for 3h chart`);
+      return combinedData;
+    } catch (error) {
+      console.error('Error fetching mixed granularity data:', error);
+      return [];
+    }
+  }
+
+  // Fetch Bitcoin historical data from Bitstamp API with caching
+  async function fetchBitcoinData(timeframe: string = '12h') {
+    const config = TIMEFRAME_CONFIG[timeframe];
+    if (!config) {
+      console.error('Invalid timeframe:', timeframe);
+      return;
+    }
+
+    // Special case for 3h: use mixed granularity (OHLC for older 2h + bucketed trades for recent 1h)
+    if (timeframe === '3h') {
+      console.log('3h: Using mixed granularity (OHLC + bucketed trades)');
+      const chartData = await fetchMixedGranularityData();
+
+      allDataPoints = chartData;
+      areaSeries.setData(chartData);
+      chart.timeScale().fitContent();
+
+      if (chartData.length > 0) {
+        initialPriceForPeriod = chartData[0].value;
+        if (latestPrice === 0) {
+          latestPrice = chartData[chartData.length - 1].value;
+        }
+        updatePriceDisplay();
+      }
+      return;
+    }
+
+    // For high-frequency timeframes (< 60s intervals), use transactions API with bucketing
+    if (config.updateInterval < 60) {
+      console.log(`${timeframe}: Using transactions API with ${config.updateInterval}s buckets`);
+      const chartData = await fetchAndBucketTrades(timeframe, config.updateInterval);
+
+      allDataPoints = chartData;
+      areaSeries.setData(chartData);
+      chart.timeScale().fitContent();
+
+      if (chartData.length > 0) {
+        initialPriceForPeriod = chartData[0].value;
+        if (latestPrice === 0) {
+          latestPrice = chartData[chartData.length - 1].value;
+        }
+        updatePriceDisplay();
+      }
+      return;
+    }
+
+    console.log(`Fetching Bitcoin historical data for ${timeframe}`);
+    try {
+      // Check cache first
+      const cacheKey = `bitstamp_${timeframe}`;
+      const cached = dataCache.get(cacheKey);
+      const now = Date.now();
+
+      if (cached && now - cached.timestamp < CACHE_DURATION) {
+        console.log('Using cached data');
+        const chartData = cached.data;
+
+        // Store all data points
+        allDataPoints = chartData;
+
+        console.log('Loaded', chartData.length, 'cached data points');
+        areaSeries.setData(chartData);
+        chart.timeScale().fitContent();
+
+        if (chartData.length > 0) {
+          initialPriceForPeriod = chartData[0].value;
+          // Keep latestPrice from WebSocket if we have it, otherwise use cached data
+          if (latestPrice === 0) {
+            latestPrice = chartData[chartData.length - 1].value;
+          }
+          updatePriceDisplay();
+        }
+
+        return;
+      }
+
+      // Fetch fresh data from Bitstamp OHLC API
+      console.log('Fetching fresh data from Bitstamp OHLC API...');
+      const url = `https://www.bitstamp.net/api/v2/ohlc/btcusd/?step=${config.step}&limit=${config.limit}`;
+      console.log('URL:', url);
+
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        console.error('Bitstamp API error:', response.status, response.statusText);
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('Received OHLC data from Bitstamp, candles:', data.data?.ohlc?.length);
+
+      // Convert OHLC data to lightweight-charts format (using close price)
+      const chartData = data.data.ohlc.map((candle: any) => ({
+        time: parseInt(candle.timestamp) as UTCTimestamp,
+        value: parseFloat(candle.close),
+      }));
+
+      console.log('Loaded', chartData.length, 'data points');
+
+      // Store all data points
+      allDataPoints = chartData;
+
+      // Store in cache
+      dataCache.set(cacheKey, {data: chartData, timestamp: now});
+
+      areaSeries.setData(chartData);
+      chart.timeScale().fitContent();
+
+      if (chartData.length > 0) {
+        initialPriceForPeriod = chartData[0].value;
+        // Keep latestPrice from WebSocket if we have it, otherwise use fetched data
+        if (latestPrice === 0) {
+          latestPrice = chartData[chartData.length - 1].value;
+        }
+        console.log('Initial price:', initialPriceForPeriod, 'Latest price:', latestPrice);
+        updatePriceDisplay();
+      }
+    } catch (error) {
+      console.error('Error fetching Bitcoin historical data:', error);
+      // Just log the error, WebSocket will handle live updates
+    }
+  }
+
+  // Update price display
+  function updatePriceDisplay() {
+    if (!currentPriceEl || !priceChangeEl) return;
+
+    const priceChange = ((latestPrice - initialPriceForPeriod) / initialPriceForPeriod) * 100;
+
+    const formattedPrice = `$${latestPrice.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+    currentPriceEl.textContent = formattedPrice;
+
+    // Update browser tab title with real-time price
+    document.title = `${formattedPrice} - Bitcoin Tracker`;
+
+    priceChangeEl.textContent = `${priceChange >= 0 ? '+' : ''}${priceChange.toFixed(2)}%`;
+    priceChangeEl.className = `price-change ${priceChange >= 0 ? 'positive' : 'negative'}`;
+  }
+
+  // WebSocket connection management
+  let ws: WebSocket | null = null;
+  let reconnectTimeout: number | null = null;
+
+  // Start live price updates using Bitstamp WebSocket
+  function startLiveUpdates() {
+    // Clear any existing intervals/connections
+    if (updateInterval) {
+      clearInterval(updateInterval);
+      updateInterval = null;
+    }
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+
+    console.log('Connecting to Bitstamp WebSocket for live Bitcoin updates');
+
+    try {
+      ws = new WebSocket('wss://ws.bitstamp.net');
+
+      ws.onopen = () => {
+        console.log('✓ Connected to Bitstamp');
+
+        // Subscribe to live trades
+        const subscribeMsg = JSON.stringify({
+          event: 'bts:subscribe',
+          data: {channel: 'live_trades_btcusd'},
+        });
+        ws?.send(subscribeMsg);
+
+        // Start 1-second interval to update price display
+        updateInterval = window.setInterval(() => {
+          const currentTime = Math.floor(Date.now() / 1000);
+
+          if (latestPrice > 0) {
+            // Always update price display every second
+            if (currentTime > lastUpdateTime) {
+              lastUpdateTime = currentTime;
+              updatePriceDisplay();
+
+              // Update the chart with the current latest price in real-time
+              // This updates the right y-axis price ticker
+              if (allDataPoints.length > 0) {
+                const lastPoint = allDataPoints[allDataPoints.length - 1];
+                if (lastPoint) {
+                  areaSeries.update({
+                    time: lastPoint.time,
+                    value: latestPrice,
+                  });
+                }
+              }
+            }
+
+            // Add new chart data point based on selected timeframe's update interval
+            const config = TIMEFRAME_CONFIG[selectedTimeframe];
+            if (config && (lastChartUpdateTime === 0 || currentTime - lastChartUpdateTime >= config.updateInterval)) {
+              console.log(`Adding new chart data point (interval: ${config.updateInterval}s)`);
+
+              const newPoint = {
+                time: currentTime as UTCTimestamp,
+                value: latestPrice,
+              };
+
+              allDataPoints.push(newPoint);
+
+              // Remove data points older than the selected timeframe duration
+              const cutoffTime = currentTime - config.duration;
+              allDataPoints = allDataPoints.filter(point => point.time >= cutoffTime);
+
+              // Update initial price for percentage calculation
+              if (allDataPoints.length > 0 && allDataPoints[0]) {
+                initialPriceForPeriod = allDataPoints[0].value;
+              }
+
+              // Update chart with filtered data
+              areaSeries.setData(allDataPoints);
+
+              lastChartUpdateTime = currentTime;
+            }
+          }
+        }, 1000);
+      };
+
+      ws.onmessage = event => {
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message.event === 'bts:subscription_succeeded') {
+            console.log('✓ Subscribed to live trades');
+            return;
+          }
+
+          if (message.event === 'trade' && message.data?.price) {
+            latestPrice = parseFloat(message.data.price);
+          }
+        } catch (error) {
+          console.error('WebSocket message error:', error);
+        }
+      };
+
+      ws.onerror = error => {
+        console.error('WebSocket error:', error);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        if (updateInterval) {
+          clearInterval(updateInterval);
+          updateInterval = null;
+        }
+        // Don't auto-reconnect to avoid infinite loop
+        // User can refresh page if needed
+      };
+    } catch (error) {
+      console.error('Failed to connect to WebSocket:', error);
+    }
+  }
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    if (updateInterval) {
+      clearInterval(updateInterval);
+    }
+    if (ws) {
+      ws.close();
+    }
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+    }
+    observer.disconnect();
+  });
+
+  // Timeframe selector click handlers
+  function switchTimeframe(newTimeframe: string) {
+    if (newTimeframe === selectedTimeframe) return;
+
+    console.log('Switching to timeframe:', newTimeframe);
+    selectedTimeframe = newTimeframe;
+
+    // Update currentSelectedDays based on the timeframe duration
+    const config = TIMEFRAME_CONFIG[newTimeframe];
+    if (config) {
+      currentSelectedDays = config.duration / 86400; // Convert seconds to days
+    }
+
+    // Update UI - set active button
+    const buttons = document.querySelectorAll('.timeframe-btn');
+    buttons.forEach(btn => {
+      if (btn.getAttribute('data-timeframe') === newTimeframe) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    // Clear current data
+    allDataPoints = [];
+    lastChartUpdateTime = 0;
+
+    // Show loading state
+    if (currentPriceEl) {
+      currentPriceEl.textContent = 'Loading...';
+    }
+
+    // Fetch new data
+    fetchBitcoinData(newTimeframe);
+  }
+
+  // Add click listeners to timeframe buttons
+  document.querySelectorAll('.timeframe-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const timeframe = btn.getAttribute('data-timeframe');
+      if (timeframe) {
+        switchTimeframe(timeframe);
+      }
+    });
+  });
+
+  // Initial load - start with live data immediately
+  console.log('Starting Bitcoin chart...');
+
+  // Set initial message
+  if (currentPriceEl) {
+    currentPriceEl.textContent = 'Connecting...';
+  }
+
+  // Fetch historical data first to populate the chart
+  fetchBitcoinData();
+
+  // Then start WebSocket for live updates
+  startLiveUpdates();
+</script>
+
+<style>
+  .page-main {
+    padding: 1rem;
+  }
+
+  @media (max-width: 640px) {
+    .page-main {
+      padding: 0.5rem;
+    }
+  }
+
+  .bitcoin-container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0;
+  }
+
+  .bitcoin-header {
+    padding: 1.5rem 0 2rem 0;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .bitcoin-header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0 0 1rem 0;
+    color: #333;
+  }
+
+  .price-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .current-price {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #000000;
+  }
+
+  :global(html.dark-mode) .current-price {
+    color: #ffffff;
+  }
+
+  .price-change {
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+  }
+
+  .price-change.positive {
+    color: #10b981;
+    background: #d1fae5;
+  }
+
+  .price-change.negative {
+    color: #ef4444;
+    background: #fee2e2;
+  }
+
+  #chart {
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    margin-bottom: 2rem;
+    position: relative;
+  }
+
+  /* Hide TradingView watermark */
+  #chart :global(a[href*='tradingview']) {
+    display: none !important;
+  }
+
+  #chart :global(img[alt*='TradingView']) {
+    display: none !important;
+  }
+
+  /* Dark mode */
+  :global(html.dark-mode) .bitcoin-header h1 {
+    color: #fff;
+  }
+
+  :global(html.dark-mode) #chart {
+    border-color: #2a2a2a;
+  }
+
+  :global(html.dark-mode) .price-change.positive {
+    color: #10b981;
+    background: #064e3b;
+  }
+
+  :global(html.dark-mode) .price-change.negative {
+    color: #ef4444;
+    background: #7f1d1d;
+  }
+
+  @media (max-width: 640px) {
+    .bitcoin-header {
+      padding: 1rem 0 1.5rem 0;
+    }
+
+    .current-price {
+      font-size: 1.5rem;
+    }
+
+    .price-change {
+      font-size: 1rem;
+    }
+  }
+
+  .timeframe-selector {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .timeframe-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    color: #6b7280;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+
+  .timeframe-btn:hover {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+    color: #374151;
+  }
+
+  .timeframe-btn.active {
+    background: #000000;
+    color: #ffffff;
+    border-color: #000000;
+  }
+
+  :global(html.dark-mode) .timeframe-btn {
+    background: #2a2a2a;
+    color: #9ca3af;
+    border-color: #404040;
+  }
+
+  :global(html.dark-mode) .timeframe-btn:hover {
+    background: #404040;
+    border-color: #525252;
+    color: #d1d5db;
+  }
+
+  :global(html.dark-mode) .timeframe-btn.active {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+  }
+
+  @media (max-width: 640px) {
+    .timeframe-selector {
+      gap: 0.375rem;
+    }
+
+    .timeframe-btn {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.75rem;
+    }
+  }
+</style>

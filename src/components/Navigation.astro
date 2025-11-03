@@ -1,0 +1,89 @@
+---
+import SettingsMenu from './SettingsMenu.astro';
+---
+
+<nav class="nav">
+  <div class="nav-header">
+    <div class="nav-container">
+      <h1 class="site-title">
+        <a href="/">Bitcoin Tracker</a>
+      </h1>
+    </div>
+    <div class="nav-settings">
+      <SettingsMenu />
+    </div>
+  </div>
+</nav>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: #fff;
+    border-bottom: 1px solid #333;
+    padding: 0 1rem 1rem 1rem;
+    margin-bottom: 2rem;
+  }
+
+  @media (max-width: 640px) {
+    .nav {
+      margin-bottom: 1rem;
+    }
+  }
+
+  :global(html.dark-mode) .nav {
+    background: #0a0a0a;
+    border-bottom: none;
+  }
+
+  .nav-header {
+    position: relative;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .nav-container {
+    text-align: center;
+    flex: 1;
+  }
+
+  .site-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    margin: 1rem 0 0 0;
+  }
+
+  .site-title a {
+    color: #1a1a1a;
+    text-decoration: none;
+  }
+
+  .site-title a:hover {
+    text-decoration: underline;
+  }
+
+  :global(html.dark-mode) .site-title a {
+    color: #fff;
+  }
+
+  .nav-settings {
+    position: absolute;
+    right: 0;
+    top: 0.5rem;
+  }
+
+  @media (max-width: 640px) {
+    .nav-settings {
+      top: 0;
+    }
+
+    .site-title {
+      font-size: 1.125rem;
+    }
+  }
+</style>
